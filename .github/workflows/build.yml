@@ -1,0 +1,82 @@
+name: Build RecorderAnalyzer
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+      fail-fast: false
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile --name RecorderAnalyzer ^
+            --add-data "core;core" ^
+            --add-data "ui;ui" ^
+            --hidden-import core ^
+            --hidden-import ui ^
+            --hidden-import core.models ^
+            --hidden-import core.analyzer ^
+            --hidden-import core.generator ^
+            --hidden-import core.executor ^
+            --hidden-import core.recorder ^
+            --hidden-import ui.panels ^
+            --hidden-import ui.app ^
+            --collect-all flet ^
+            --noconfirm ^
+            main.py
+        shell: bash
+        env:
+          # Windows paths use ; as separator in --add-data, Linux/macOS use :
+          ADD_DATA_SEP: "${{ runner.os == 'Windows' && ';' || ':' }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecorderAnalyzer-${{ runner.os }}
+          path: |
+            dist/RecorderAnalyzer
+            dist/RecorderAnalyzer.exe
+          if-no-files-found: warn
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            RecorderAnalyzer-Windows/RecorderAnalyzer.exe
+            RecorderAnalyzer-Linux/RecorderAnalyzer
+            RecorderAnalyzer-macOS/RecorderAnalyzer
+          generate_release_notes: true

@@ -1,0 +1,64 @@
+@echo off
+chcp 65001 >nul
+title RecorderAnalyzer 构建工具
+
+echo ============================================
+echo  RecorderAnalyzer Windows 打包脚本
+echo ============================================
+echo.
+
+REM 检查 Python
+where python >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [错误] 未找到 Python，请先安装 Python 3.10+
+    pause
+    exit /b 1
+)
+
+REM 检查并创建虚拟环境
+if not exist ".venv\" (
+    echo [1/4] 创建虚拟环境...
+    python -m venv .venv
+)
+
+echo [2/4] 安装依赖...
+call .venv\Scripts\pip install -r requirements.txt pyinstaller
+if %errorlevel% neq 0 (
+    echo [错误] 依赖安装失败
+    pause
+    exit /b 1
+)
+
+echo [3/4] 清理旧构建...
+if exist "dist\" rmdir /s /q dist
+if exist "build\" rmdir /s /q build
+if exist "RecorderAnalyzer.spec" del RecorderAnalyzer.spec
+
+echo [4/4] 打包中...
+call .venv\Scripts\pyinstaller --onefile --name RecorderAnalyzer ^
+    --add-data "core;core" ^
+    --add-data "ui;ui" ^
+    --hidden-import core ^
+    --hidden-import ui ^
+    --hidden-import core.models ^
+    --hidden-import core.analyzer ^
+    --hidden-import core.generator ^
+    --hidden-import core.executor ^
+    --hidden-import core.recorder ^
+    --hidden-import ui.panels ^
+    --hidden-import ui.app ^
+    --collect-all flet ^
+    --noconfirm ^
+    main.py
+
+if %errorlevel% equ 0 (
+    echo.
+    echo ============================================
+    echo  构建成功！
+    echo  可执行文件: dist\RecorderAnalyzer.exe
+    echo ============================================
+) else (
+    echo [错误] 打包失败
+)
+
+pause
