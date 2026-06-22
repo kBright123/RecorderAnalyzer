@@ -1,6 +1,6 @@
 # RecorderAnalyzer
 
-**操作-请求关联分析客户端** — 录制浏览器操作，自动分析 HTTP 请求，生成可执行的 Postman 集合。
+**手工测试流量智能分析工具** — 录制浏览器操作，自动分析 HTTP 请求，生成可执行的 Postman 集合。
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Flet](https://img.shields.io/badge/UI-Flet-0268d1)

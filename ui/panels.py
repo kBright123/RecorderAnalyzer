@@ -25,7 +25,7 @@ class ToolBar(ft.Container):
 
     def __init__(self, on_start, on_stop, on_execute, on_export, on_save=None, on_load=None, on_window_change=None):
         self._url_input = ft.TextField(
-            hint_text="输入起始 URL，如 https://example.com",
+            hint_text="输入起始 URL，如 https://example.com（CDP 自动连接失败时使用）",
             expand=True,
             height=48,
             text_size=16,
@@ -39,6 +39,8 @@ class ToolBar(ft.Container):
         self._status_icon = ft.Icon(self.STATUS_ICONS["idle"], color=self.STATUS_COLORS["idle"])
         self._status_text = ft.Text("空闲中", size=14)
         self._count_text = ft.Text("", size=14, color=ft.Colors.GREY)
+        self._download_bar = ft.ProgressBar(visible=False, width=200, height=6)
+        self._download_label = ft.Text("", size=12, color=ft.Colors.GREY_700, visible=False)
         self._window_input = ft.TextField(
             hint_text="时间窗(ms)",
             value="5000",
@@ -64,6 +66,8 @@ class ToolBar(ft.Container):
             self._status_icon,
             self._status_text,
             self._count_text,
+            self._download_bar,
+            self._download_label,
         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         super().__init__(content=bar, padding=10, bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST)
@@ -83,6 +87,20 @@ class ToolBar(ft.Container):
         self._execute_btn.disabled = not is_done
         self._export_btn.disabled = not is_done
         self._save_btn.disabled = not is_done
+        self.update()
+
+    def set_download_status(self, msg: str):
+        self._download_bar.visible = True
+        self._download_label.visible = True
+        self._download_label.value = msg.strip()[:60]
+        self._status_text.value = "下载浏览器..."
+        self.update()
+
+    def hide_download_status(self):
+        self._download_bar.visible = False
+        self._download_label.visible = False
+        self._download_label.value = ""
+        self._status_text.value = "空闲中"
         self.update()
 
     def set_buttons_enabled(self, execute: bool = True, export: bool = True, save: bool = True):
@@ -261,17 +279,34 @@ class DetailPanel(ft.Container):
         self._dep_graph = ft.Column([ft.Text("无依赖关系", italic=True)], scroll="auto", expand=True)
         self._exec_result = ft.Column([ft.Text("尚未执行", italic=True)], scroll="auto", expand=True)
 
-        tabs = []
-        for label, container in (
-            ("报文详情", ft.Container(self._request_detail, padding=8, expand=True)),
-            ("关联变量", ft.Container(self._variable_list, padding=8, expand=True)),
-            ("依赖图谱", ft.Container(self._dep_graph, padding=8, expand=True)),
-            ("执行结果", ft.Container(self._exec_result, padding=8, expand=True)),
-        ):
-            t = ft.Tab(label)
-            t.content = container
-            tabs.append(t)
-        self._tabs = ft.Tabs(content=tabs, length=len(tabs), selected_index=0, expand=True)
+        self._tabs = ft.Tabs(
+            4,
+            selected_index=0,
+            expand=True,
+            content=ft.Column(
+                expand=True,
+                spacing=0,
+                controls=[
+                    ft.TabBar(
+                        tabs=[
+                            ft.Tab(label="报文详情"),
+                            ft.Tab(label="关联变量"),
+                            ft.Tab(label="依赖图谱"),
+                            ft.Tab(label="执行结果"),
+                        ],
+                    ),
+                    ft.TabBarView(
+                        expand=True,
+                        controls=[
+                            ft.Container(self._request_detail, padding=8, expand=True),
+                            ft.Container(self._variable_list, padding=8, expand=True),
+                            ft.Container(self._dep_graph, padding=8, expand=True),
+                            ft.Container(self._exec_result, padding=8, expand=True),
+                        ],
+                    ),
+                ],
+            ),
+        )
 
         super().__init__(
             content=self._tabs,
@@ -279,6 +314,21 @@ class DetailPanel(ft.Container):
             bgcolor=ft.Colors.SURFACE_CONTAINER_LOWEST,
             border=ft.Border(top=ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)),
         )
+
+    def show_action(self, action: ActionEvent):
+        self._request_detail.controls.clear()
+        parts = [
+            ft.Text(f"操作: {action.action_type}", size=14, weight=ft.FontWeight.BOLD),
+            ft.Text(f"描述: {action.description}", size=14),
+            ft.Text(f"时间戳: {action.timestamp:.0f} ms", size=14),
+            ft.Text(f"页面: {action.page_url}", size=14, selectable=True),
+            ft.Text(f"选择器: {action.selector_hint}", size=14),
+            ft.Text("", size=10),
+            ft.Text("该操作未关联到任何请求", italic=True, color=ft.Colors.GREY_700),
+        ]
+        self._request_detail.controls.extend(parts)
+        self._tabs.selected_index = 0
+        self.update()
 
     def show_request(self, req: Optional[RequestEvent]):
         self._request_detail.controls.clear()

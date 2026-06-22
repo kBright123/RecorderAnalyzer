@@ -2,11 +2,12 @@
 set -euo pipefail
 
 APP_NAME="RecorderAnalyzer"
-APP_DISPLAY_NAME="操作-请求关联分析客户端"
+APP_DISPLAY_NAME="手工测试流量智能分析工具"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/build"
 DIST_DIR="${SCRIPT_DIR}/dist"
 VENV_DIR="${SCRIPT_DIR}/.venv-build"
+BROWSER_DIR="${SCRIPT_DIR}/browser"
 DESKTOP_FILE="${SCRIPT_DIR}/packaging/${APP_NAME}.desktop"
 
 # ── 颜色 ──
@@ -66,7 +67,6 @@ install_system_deps() {
 
     local pkgs=()
     if [ "${OS_FAMILY}" = "debian" ]; then
-        # PyInstaller 需要 binutils, Flet 需要 GTK/libX11
         pkgs=(
             python3 python3-venv python3-pip python3-dev
             binutils patchelf
@@ -79,9 +79,10 @@ install_system_deps() {
             xvfb
         )
         if command -v apt-get &>/dev/null; then
-            info "  安装 Debian 依赖 (可能需要 sudo)..."
+            info "  使用 apt-get 安装 ${#pkgs[@]} 个系统依赖..."
+            info "  包列表: ${pkgs[*]}"
             sudo apt-get update -qq
-            sudo apt-get install -y -qq "${pkgs[@]}"
+            sudo apt-get install -y "${pkgs[@]}"
             ok "系统依赖安装完成"
         else
             warn "未找到 apt-get，请手动安装依赖: ${pkgs[*]}"
@@ -98,11 +99,13 @@ install_system_deps() {
             xorg-x11-server-Xvfb
         )
         if command -v dnf &>/dev/null; then
-            info "  安装 RPM 依赖 (可能需要 sudo)..."
+            info "  使用 dnf 安装 ${#pkgs[@]} 个系统依赖..."
+            info "  包列表: ${pkgs[*]}"
             sudo dnf install -y "${pkgs[@]}"
             ok "系统依赖安装完成"
         elif command -v yum &>/dev/null; then
-            info "  安装 RPM 依赖 (可能需要 sudo)..."
+            info "  使用 yum 安装 ${#pkgs[@]} 个系统依赖..."
+            info "  包列表: ${pkgs[*]}"
             sudo yum install -y "${pkgs[@]}"
             ok "系统依赖安装完成"
         else
@@ -116,24 +119,34 @@ install_system_deps() {
 # ──────────────────────────────────────
 setup_venv() {
     info "设置 Python 虚拟环境..."
+
     if [ ! -d "${VENV_DIR}" ]; then
         python3 -m venv "${VENV_DIR}"
         ok "虚拟环境已创建: ${VENV_DIR}"
     else
-        ok "虚拟环境已存在"
+        ok "虚拟环境已存在: ${VENV_DIR}"
     fi
 
     source "${VENV_DIR}/bin/activate"
+
+    info "  升级 pip..."
     pip install --upgrade pip -q
-    pip install -r "${SCRIPT_DIR}/requirements.txt" -q
-    pip install pyinstaller -q
-    ok "Python 依赖安装完成"
+
+    info "  安装 requirements.txt 依赖..."
+    pip install -r "${SCRIPT_DIR}/requirements.txt"
+    ok "requirements.txt 依赖安装完成"
+
+    info "  安装 pyinstaller..."
+    pip install pyinstaller
+    ok "pyinstaller 安装完成"
 
     # Playwright 浏览器
-    info "安装 Playwright 浏览器..."
-    python -m playwright install chromium 2>/dev/null || warn "Playwright 浏览器安装失败，可在运行时安装"
+    info "安装 Playwright Chromium 到 ${BROWSER_DIR} ..."
+    info "  这将下载约 400MB 数据，请耐心等待..."
+    PLAYWRIGHT_BROWSERS_PATH="${BROWSER_DIR}" python -m playwright install chromium \
+        && ok "Playwright Chromium 已下载到 ${BROWSER_DIR}" \
+        || warn "Playwright 浏览器下载失败，可在运行时自动下载"
 }
-
 # ──────────────────────────────────────
 # 4. 清理
 # ──────────────────────────────────────
@@ -158,6 +171,7 @@ do_build() {
         --name "${APP_NAME}" \
         --add-data "core:core" \
         --add-data "ui:ui" \
+        --add-data "fonts:fonts" \
         --hidden-import core \
         --hidden-import ui \
         --hidden-import core.models \
@@ -175,11 +189,22 @@ do_build() {
 
     ok "构建完成: ${DIST_DIR}/${APP_NAME}"
 
+    # 复制浏览器到 dist 目录（供离线使用）
+    if [ -d "${BROWSER_DIR}" ] && [ -n "$(ls -A "${BROWSER_DIR}" 2>/dev/null)" ]; then
+        info "复制浏览器到 ${DIST_DIR}/browser ..."
+        cp -a "${BROWSER_DIR}" "${DIST_DIR}/browser"
+        local browser_size
+        browser_size=$(du -sh "${DIST_DIR}/browser" | cut -f1)
+        ok "浏览器已打包: ${browser_size}"
+    else
+        warn "未找到 browser/ 目录，运行时将自动下载"
+    fi
+
     # 验证
     if [ -f "${DIST_DIR}/${APP_NAME}" ]; then
         local size
         size=$(du -h "${DIST_DIR}/${APP_NAME}" | cut -f1)
-        info "  文件大小: ${size}"
+        info "  可执行文件大小: ${size}"
         file "${DIST_DIR}/${APP_NAME}"
     fi
 }
@@ -231,10 +256,11 @@ build_deb() {
     local deb_root="${BUILD_DIR}/deb/${APP_NAME}"
     local deb_dir="${deb_root}/DEBIAN"
     local deb_bin="${deb_root}/usr/bin"
+    local deb_share="${deb_root}/usr/share/${APP_NAME}"
     local deb_desktop="${deb_root}/usr/share/applications"
     local deb_icon="${deb_root}/usr/share/icons/hicolor/256x256/apps"
 
-    mkdir -p "${deb_dir}" "${deb_bin}" "${deb_desktop}" "${deb_icon}"
+    mkdir -p "${deb_dir}" "${deb_bin}" "${deb_share}" "${deb_desktop}" "${deb_icon}"
 
     # control
     cat > "${deb_dir}/control" << EOF
@@ -251,6 +277,11 @@ EOF
 
     # 复制二进制
     cp "${DIST_DIR}/${APP_NAME}" "${deb_bin}/"
+
+    # 复制浏览器到 /usr/share/RecorderAnalyzer/browser （FHS 标准）
+    if [ -d "${DIST_DIR}/browser" ]; then
+        cp -a "${DIST_DIR}/browser" "${deb_share}/browser"
+    fi
 
     # 桌面入口
     if [ -f "${DESKTOP_FILE}" ]; then
@@ -271,6 +302,19 @@ EOF
     else
         warn ".deb 打包失败"
     fi
+}
+
+# ──────────────────────────────────────
+# 8. 单独下载浏览器
+# ──────────────────────────────────────
+download_browser() {
+    info "下载 Playwright Chromium 到 ${BROWSER_DIR} ..."
+    info "  这将下载约 400MB 数据，请耐心等待..."
+    mkdir -p "${BROWSER_DIR}"
+    PLAYWRIGHT_BROWSERS_PATH="${BROWSER_DIR}" python -m playwright install chromium --with-deps
+    local size
+    size=$(du -sh "${BROWSER_DIR}" | cut -f1)
+    ok "Playwright Chromium 已下载: ${BROWSER_DIR} (${size})"
 }
 
 # ──────────────────────────────────────
@@ -306,6 +350,10 @@ main() {
         desktop)
             install_desktop_entry
             ;;
+        browser)
+            source "${VENV_DIR}/bin/activate"
+            download_browser
+            ;;
         all)
             install_system_deps
             setup_venv
@@ -315,12 +363,13 @@ main() {
             build_deb
             ;;
         *)
-            echo "用法: $0 {all|deps|build|deb|desktop|clean}"
-            echo "  all      完整构建（默认）"
+            echo "用法: $0 {all|deps|build|deb|desktop|browser|clean}"
+            echo "  all      完整构建（默认，含浏览器下载）"
             echo "  deps     安装系统依赖 + Python 依赖"
             echo "  build    仅构建可执行文件"
             echo "  deb      打包为 .deb"
             echo "  desktop  安装桌面快捷方式"
+            echo "  browser  单独下载 Playwright Chromium 到 browser/"
             echo "  clean    清理构建产物"
             exit 0
             ;;

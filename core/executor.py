@@ -85,6 +85,9 @@ class Executor:
                     queue.append(neighbor)
 
         remaining = [r.id for r in result.requests if r.id not in sorted_ids]
+        if remaining:
+            import warnings
+            warnings.warn(f"依赖关系存在环，{len(remaining)} 个请求无法排序")
         sorted_ids.extend(remaining)
 
         return [req_map[rid] for rid in sorted_ids]

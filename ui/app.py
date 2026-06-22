@@ -1,5 +1,7 @@
 import asyncio
 import json
+import pathlib
+import sys
 import threading
 
 import flet as ft
@@ -10,6 +12,7 @@ from core.generator import generate_collection_json
 from core.executor import Executor, ExecutorError
 from core.models import ActionEvent, RequestEvent, VariableDep, CorrelationMap
 from ui.panels import ToolBar, ActionTimeline, RequestWaterfall, DetailPanel
+from ui.file_dialog import pick_file, save_file
 
 
 class RecorderApp:
@@ -27,27 +30,31 @@ class RecorderApp:
         self._result = None
         self._last_trace_path = None
         self._snackbar = ft.SnackBar(ft.Text(""), duration=4000)
-        self._file_picker = ft.FilePicker()
-        self._file_picker.on_result = self._on_file_picked
-        self._load_picker = ft.FilePicker()
-        self._load_picker.on_result = self._on_load_picked
-        self._save_picker = ft.FilePicker()
-        self._save_picker.on_result = self._on_save_picked
         self._loop = None
 
         page.overlay.append(self._snackbar)
-        page.overlay.append(self._file_picker)
-        page.overlay.append(self._load_picker)
-        page.overlay.append(self._save_picker)
+
+        self._font_family = ""
+        font_path = self._resolve_font_path()
+        if font_path and font_path.exists():
+            self._font_family = "NotoSansCJKsc"
+            page.fonts = {self._font_family: str(font_path)}
+
         self._setup_page()
 
+    @staticmethod
+    def _resolve_font_path() -> pathlib.Path:
+        base = pathlib.Path(getattr(sys, '_MEIPASS', pathlib.Path(__file__).parent.parent))
+        return base / "fonts" / "NotoSansCJKsc-Regular.otf"
+
     def _setup_page(self):
-        self.page.title = "操作-请求关联分析客户端"
+        self.page.title = "手工测试流量智能分析工具"
         self.page.padding = 0
         self.page.spacing = 0
         self.page.window.width = 1400
         self.page.window.height = 900
         self.page.theme = ft.Theme(
+            font_family=self._font_family or None,
             color_scheme=ft.ColorScheme(
                 primary=ft.Colors.INDIGO,
                 tertiary=ft.Colors.TEAL,
@@ -67,9 +74,6 @@ class RecorderApp:
         self.waterfall = RequestWaterfall()
         self.detail = DetailPanel()
 
-        self.timeline.set_actions([], on_select=self._on_action_select)
-        self.waterfall.set_requests([], on_select=self._on_request_select)
-
         main_content = ft.Row(
             [self.timeline, ft.VerticalDivider(), self.waterfall],
             spacing=0,
@@ -82,6 +86,10 @@ class RecorderApp:
             main_content,
             self.detail,
         )
+        self.page.update()
+
+        self.timeline.set_actions([], on_select=self._on_action_select)
+        self.waterfall.set_requests([], on_select=self._on_request_select)
 
         self._loop = asyncio.get_running_loop()
 
@@ -111,13 +119,7 @@ class RecorderApp:
     # ────────────── 录制流程 ──────────────
 
     def _on_start(self):
-        url = self.toolbar.get_url().strip()
-        if not url:
-            self._show_toast("请输入起始 URL")
-            return
-        if not url.startswith("http://") and not url.startswith("https://"):
-            url = "https://" + url
-
+        """自动选择录制模式：优先 CDP 连接本地 Chromium，失败则回落启动内置浏览器。"""
         self.toolbar.set_status("recording")
         self.toolbar.set_buttons_enabled(execute=False, export=False)
         self.page.update()
@@ -125,10 +127,34 @@ class RecorderApp:
         def _start():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._recorder.start(url))
-            return None
 
-        self._run_in_thread(_start, on_done=lambda _: self._start_polling())
+            try:
+                loop.run_until_complete(self._recorder.start_cdp(9222))
+                self._run_async(self._show_toast_async("已连接本地浏览器"))
+                return
+            except RecorderError:
+                pass
+
+            url = self.toolbar.get_url().strip()
+            if not url:
+                raise RecorderError("未检测到本地浏览器，请输入 URL 启动新浏览器")
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "https://" + url
+
+            self._run_async(self._show_download_status("正在下载 Playwright Chromium ..."))
+            Recorder.ensure_browser(progress_callback=lambda msg: self._run_async(self._show_download_status(msg)))
+            self._run_async(self._hide_download_status())
+            loop.run_until_complete(self._recorder.start(url))
+
+        self._run_in_thread(_start, on_done=lambda _: self._update_after_start())
+
+    def _update_after_start(self):
+        if self._recorder.is_recording:
+            self._start_polling()
+        else:
+            self.toolbar.set_status("idle")
+            self.toolbar.set_buttons_enabled(execute=True, export=True)
+            self.page.update()
 
     def _start_polling(self):
         if not self._recorder.is_recording:
@@ -149,7 +175,11 @@ class RecorderApp:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             trace_path = loop.run_until_complete(self._recorder.stop())
-            result = self._analyzer.analyze(trace_path)
+            reqs = self._recorder.get_captured_requests()
+            if self._recorder.mode == "cdp":
+                result = self._analyzer.analyze_from_requests([], reqs)
+            else:
+                result = self._analyzer.analyze(trace_path)
             return (trace_path, result)
 
         self._run_in_thread(_stop, on_done=self._on_analysis_done)
@@ -179,6 +209,7 @@ class RecorderApp:
                 self.detail.show_request(None)
                 return
         self.waterfall.clear_highlight()
+        self.detail.show_action(action)
 
     def _on_request_select(self, req: RequestEvent):
         self.detail.show_request(req)
@@ -194,25 +225,18 @@ class RecorderApp:
             self._show_toast("无数据可导出")
             return
 
-        try:
-            self._export_json = generate_collection_json(self._result, "录制分析 Collection")
-        except Exception as ex:
-            self._show_toast(f"生成失败: {ex}")
-            return
-
-        self._file_picker.save_file(
-            file_name="collection.postman_collection.json",
-            allowed_extensions=["json"],
-        )
-
-    def _on_file_picked(self, e):
-        if e.path and hasattr(self, "_export_json"):
+        def _do_export(path):
+            if not path:
+                return
             try:
-                with open(e.path, "w", encoding="utf-8") as f:
-                    f.write(self._export_json)
-                self._show_toast(f"已导出到 {e.path}")
+                json_str = generate_collection_json(self._result, "录制分析 Collection")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(json_str)
+                self._run_async(self._show_toast_async(f"已导出到 {path}"))
             except Exception as ex:
-                self._show_toast(f"写入失败: {ex}")
+                self._run_async(self._show_toast_async(f"导出失败: {ex}"))
+
+        save_file(title="导出 Postman Collection", filename="collection.postman_collection.json", callback=_do_export)
 
     def _show_toast(self, msg: str):
         self._snackbar.content = ft.Text(msg)
@@ -231,46 +255,54 @@ class RecorderApp:
         if not self._result:
             self._show_toast("无数据可保存")
             return
-        self._save_picker.save_file(
-            file_name="session.json",
-            allowed_extensions=["json"],
-        )
 
-    async def _on_save_picked(self, e):
-        if not e.path or not self._result:
-            return
-        try:
-            with open(e.path, "w", encoding="utf-8") as f:
-                f.write(self._result.to_json())
-            self._show_toast(f"已保存到 {e.path}")
-        except Exception as ex:
-            self._show_toast(f"保存失败: {ex}")
+        def _do_save(path):
+            if not path or not self._result:
+                return
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self._result.to_json())
+                self._run_async(self._show_toast_async(f"已保存到 {path}"))
+            except Exception as ex:
+                self._run_async(self._show_toast_async(f"保存失败: {ex}"))
+
+        save_file(title="保存会话", filename="session.json", callback=_do_save)
 
     def _on_load(self):
-        self._load_picker.pick_files(
-            file_type="json",
-            allow_multiple=False,
-        )
+        def _do_load(path):
+            if not path:
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                from core.models import AnalysisResult
+                self._result = AnalysisResult(
+                    actions=[ActionEvent(**a) for a in data.get("actions", [])],
+                    requests=[RequestEvent(**r) for r in data.get("requests", [])],
+                    correlations=[CorrelationMap(**c) for c in data.get("correlations", [])],
+                    variables=[VariableDep(**v) for v in data.get("variables", [])],
+                    orphan_requests=data.get("orphan_requests", []),
+                )
+                self._run_async(self._on_load_done(path))
+            except Exception as ex:
+                self._run_async(self._show_toast_async(f"加载失败: {ex}"))
 
-    async def _on_load_picked(self, e):
-        if not e.files:
-            return
-        path = e.files[0].path
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            from core.models import AnalysisResult
-            self._result = AnalysisResult(
-                actions=[ActionEvent(**a) for a in data.get("actions", [])],
-                requests=[RequestEvent(**r) for r in data.get("requests", [])],
-                correlations=[CorrelationMap(**c) for c in data.get("correlations", [])],
-                variables=[VariableDep(**v) for v in data.get("variables", [])],
-                orphan_requests=data.get("orphan_requests", []),
-            )
-            await self._on_analysis_done((None, self._result))
-            self._show_toast(f"已加载 {path}")
-        except Exception as ex:
-            self._show_toast(f"加载失败: {ex}")
+        pick_file(title="加载会话文件", callback=_do_load)
+
+    async def _on_load_done(self, path: str):
+        await self._on_analysis_done((None, self._result))
+        self._show_toast(f"已加载 {path}")
+
+    async def _show_download_status(self, msg: str):
+        self.toolbar.set_download_status(msg)
+        self.page.update()
+
+    async def _hide_download_status(self):
+        self.toolbar.hide_download_status()
+        self.page.update()
+
+    async def _show_toast_async(self, msg: str):
+        self._show_toast(msg)
 
     # ────────────── 执行（流式进度） ──────────────
 

@@ -27,7 +27,7 @@ class TraceParser:
 
     def parse(self) -> tuple[list[ActionEvent], list[RequestEvent]]:
         """解构 trace.zip，返回 (操作事件列表, 请求事件列表)。"""
-        if not self._trace_file.exists():
+        if not self._trace_path.exists():
             raise AnalyzerError(f"Trace 文件不存在: {self._trace_path}")
 
         try:
@@ -70,10 +70,6 @@ class TraceParser:
                     req_idx += 1
 
         return actions, requests
-
-    @property
-    def _trace_file(self) -> Path:
-        return self._trace_path
 
     def _parse_action(self, record: dict, idx: int, ts: float, metadata: dict) -> Optional[ActionEvent]:
         action_data = record.get("action", {}) or {}
@@ -269,15 +265,20 @@ class VariableExtractor:
 class Analyzer:
     """
     解析与关联层 — 整合 Trace 解析、关联和变量提取。
+    支持 launch 模式（从 trace 文件解析）和 CDP 模式（直接传入请求）。
     """
 
     def __init__(self, max_delta_ms: float = 5000.0):
         self.max_delta_ms = max_delta_ms
 
     def analyze(self, trace_path: str) -> AnalysisResult:
+        """从 trace.zip 文件分析（launch 模式）。"""
         parser = TraceParser(trace_path)
         actions, requests = parser.parse()
+        return self.analyze_from_requests(actions, requests)
 
+    def analyze_from_requests(self, actions: list[ActionEvent], requests: list[RequestEvent]) -> AnalysisResult:
+        """直接传入操作和请求列表分析（CDP 模式）。"""
         correlator = Correlator(self.max_delta_ms)
         correlations, orphan_ids = correlator.correlate(actions, requests)
 

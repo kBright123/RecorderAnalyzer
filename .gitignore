@@ -13,6 +13,10 @@ build/
 *.spec
 packaging/
 
+# Bundled browser (download at build time)
+browser/
+dist/browser/
+
 # IDE
 .vscode/
 .idea/

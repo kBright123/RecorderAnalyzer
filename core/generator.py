@@ -99,11 +99,13 @@ class PostmanGenerator:
                         "value": self._substitute_vars(v, result),
                     })
 
+        host_parts = [parsed.hostname] if parsed.hostname else parsed.netloc.split(":")
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
         return {
             "raw": self._substitute_vars(req.url, result),
             "protocol": parsed.scheme,
-            "host": parsed.netloc.split(":") if ":" in parsed.netloc else [parsed.netloc],
-            "port": parsed.port or (443 if parsed.scheme == "https" else 80),
+            "host": host_parts,
+            "port": port,
             "path": parsed.path.split("/") if parsed.path else [],
             "query": query_items if query_items else [],
         }

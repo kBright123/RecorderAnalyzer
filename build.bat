@@ -17,11 +17,11 @@ if %errorlevel% neq 0 (
 
 REM 检查并创建虚拟环境
 if not exist ".venv\" (
-    echo [1/4] 创建虚拟环境...
+    echo [1/5] 创建虚拟环境...
     python -m venv .venv
 )
 
-echo [2/4] 安装依赖...
+echo [2/5] 安装依赖...
 call .venv\Scripts\pip install -r requirements.txt pyinstaller
 if %errorlevel% neq 0 (
     echo [错误] 依赖安装失败
@@ -29,15 +29,25 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [3/4] 清理旧构建...
+REM 下载浏览器
+echo [3/5] 下载 Playwright Chromium 到 browser\...
+if not exist "browser\" mkdir browser
+set PLAYWRIGHT_BROWSERS_PATH=%CD%\browser
+call .venv\Scripts\python -m playwright install chromium
+if %errorlevel% neq 0 (
+    echo [警告] 浏览器下载失败，运行时将自动下载
+)
+
+echo [4/5] 清理旧构建...
 if exist "dist\" rmdir /s /q dist
 if exist "build\" rmdir /s /q build
 if exist "RecorderAnalyzer.spec" del RecorderAnalyzer.spec
 
-echo [4/4] 打包中...
+echo [5/5] 打包中...
 call .venv\Scripts\pyinstaller --onefile --name RecorderAnalyzer ^
     --add-data "core;core" ^
     --add-data "ui;ui" ^
+    --add-data "fonts;fonts" ^
     --hidden-import core ^
     --hidden-import ui ^
     --hidden-import core.models ^
@@ -48,10 +58,16 @@ call .venv\Scripts\pyinstaller --onefile --name RecorderAnalyzer ^
     --hidden-import ui.panels ^
     --hidden-import ui.app ^
     --collect-all flet ^
+    --collect-all playwright ^
     --noconfirm ^
     main.py
 
 if %errorlevel% equ 0 (
+    REM 复制浏览器到输出目录
+    if exist "browser\" (
+        echo [INFO] 复制 browser\ 到 dist\browser\...
+        xcopy /E /I /Q browser dist\browser >nul
+    )
     echo.
     echo ============================================
     echo  构建成功！
